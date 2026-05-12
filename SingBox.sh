@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# 1. 强建目录
+# 1. 彻底清理环境 (解决 -C 参数加载旧文件的问题)
+rm -rf /etc/sing-box/*
 mkdir -p /etc/sing-box /var/lib/sing-box
 
 # 2. 自动提取 WARP 数据
@@ -12,11 +13,12 @@ RES_VAL=$(grep -i "Reserved" $WARP_CONF | awk -F'=' '{print $2}' | tr -d ' #[]')
 [ -z "$RES_VAL" ] && RES="[0,0,0]" || RES="[${RES_VAL}]"
 
 # 3. 交互输入
-read -p "本地监听端口 (默认 60001): " IN_PORT
+read -p "网页端填的本地端口 (默认 60001): " IN_PORT
 IN_PORT=${IN_PORT:-60001}
 read -p "Argo Token: " ARGO_TOKEN
+read -p "Argo 域名: " ARGO_DOMAIN
 
-# 4. 生成 1.13.x 官方标准配置
+# 4. 生成 1.13.x 官方标准配置 (核心修复：DNS 和 WireGuard 结构)
 cat <<EOF > /etc/sing-box/config.json
 {
   "log": {
@@ -25,11 +27,8 @@ cat <<EOF > /etc/sing-box/config.json
   },
   "dns": {
     "servers": [
-      { "tag": "proxy-dns", "address": "https://8.8.8.8/dns-query", "detour": "warp-out" },
-      { "tag": "local-dns", "address": "2001:4860:4860::8888", "detour": "direct" }
-    ],
-    "rules": [
-      { "outbound": "any", "server": "proxy-dns" }
+      { "tag": "dns-remote", "address": "https://8.8.8.8/dns-query", "detour": "warp-out" },
+      { "tag": "dns-local", "address": "2606:4700:4700::1111", "detour": "direct" }
     ],
     "strategy": "prefer_ipv6"
   },
@@ -53,10 +52,10 @@ cat <<EOF > /etc/sing-box/config.json
         {
           "address": "2606:4700:d0::a29f:c001",
           "port": 2408,
-          "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+          "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+          "reserved": $RES
         }
       ],
-      "reserved": $RES,
       "mtu": 1280
     },
     { "type": "direct", "tag": "direct" },
@@ -72,7 +71,22 @@ cat <<EOF > /etc/sing-box/config.json
 }
 EOF
 
-# 5. 重启并自检
+# 5. 配置 cloudflared
+cat <<EOF > /etc/systemd/system/cloudflared.service
+[Unit]
+Description=cloudflared
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/cloudflared tunnel --protocol http2 --edge-ip-version 6 run --token $ARGO_TOKEN
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 6. 重启服务并执行严格自检
 systemctl daemon-reload
 systemctl restart sing-box cloudflared
 
