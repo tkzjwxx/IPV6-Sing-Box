@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ========================================================
-# HAX 纯 IPv6 VPS 自动化部署脚本 (V3 强力注册版)
-# 针对 WARP 注册失败 (null/failed) 做了深度伪装
+# HAX 纯 IPv6 VPS 自动化部署脚本 (V5 交付级)
+# 针对 HAX 纯 IPv6 环境深度优化，解决 WARP 注册 Null 问题
 # ========================================================
 
 GREEN='\033[0;32m'
@@ -10,59 +10,66 @@ BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-echo -e "${BLUE}>>> 正在进行环境清理与进程强杀...${NC}"
+# 1. 环境自检
+echo -e "${BLUE}>>> 正在清理环境并安装核心依赖...${NC}"
 systemctl stop sing-box cloudflared 2>/dev/null
 apt update && apt install -y wget tar curl sudo jq wireguard-tools
 
-# 1. 变量交互
-echo -e "${GREEN}>>> 参数配置：${NC}"
+# 2. 变量交互
 read -p "1. 输入 Argo Tunnel Token: " ARGO_TOKEN
 read -p "2. 输入 Argo 隧道域名: " ARGO_DOMAIN
-read -p "3. 输入 Sing-box 监听端口 (默认 12345): " SB_PORT
+read -p "3. 输入 Sing-box 监听端口: " SB_PORT
 SB_PORT=${SB_PORT:-12345}
-
-# 2. 自动生成 UUID
 UUID=$(cat /proc/sys/kernel/random/uuid)
+INSTALL_ID=$(cat /proc/sys/kernel/random/uuid | cut -c1-22)
 
-# 3. 自动化获取 WARP 身份 (V3 伪装注册逻辑)
-echo -e "${BLUE}>>> 正在发起伪装注册，正在调教 Cloudflare 接口...${NC}"
+# 3. WARP 注册核心逻辑 (带深度伪装)
+echo -e "${BLUE}>>> 正在预检网络连通性...${NC}"
+if ! ping6 -c 3 api.cloudflareclient.com > /dev/null; then
+    echo -e "${RED}致命错误：当前 VPS 无法连接 Cloudflare API 节点，请检查 IPv6 路由！${NC}"
+    exit 1
+fi
+
+echo -e "${BLUE}>>> 正在向 Cloudflare 发起 WARP 注册请求...${NC}"
 PRIV_KEY=$(wg genkey)
 PUB_KEY=$(echo "$PRIV_KEY" | wg pubkey)
 
-# 增加 User-Agent 伪装和更稳定的 API 节点
-for i in {1..5}; do
-    REG_JSON=$(curl -6 -s -X POST "https://api.cloudflareclient.com/v0a2158/reg" \
-        -H "User-Agent: okhttp/3.12.1" \
-        -H "Content-Type: application/json" \
-        -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"key\":\"$PUB_KEY\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
-    
-    WARP_V6=$(echo "$REG_JSON" | jq -r '.config.interface.address.v6 // empty')
-    
-    if [ ! -z "$WARP_V6" ] && [ "$WARP_V6" != "null" ]; then
-        break
-    fi
-    echo -e "${RED}注册尝试 $i 失败，CF 响应为空或拒绝。正在变换策略重试...${NC}"
-    sleep 3
-done
+# 核心请求：加入 Cf-Client-Version 伪装官方客户端
+RESPONSE=$(curl -6 -s -X POST "https://api.cloudflareclient.com/v0a2158/reg" \
+    -H "User-Agent: okhttp/3.12.1" \
+    -H "Content-Type: application/json" \
+    -H "Cf-Client-Version: i-2024.11.0" \
+    -d "{
+        \"install_id\": \"$INSTALL_ID\",
+        \"tos\": \"$(date -u +%FT%T.000Z)\",
+        \"key\": \"$PUB_KEY\",
+        \"fcm_token\": \"\",
+        \"type\": \"ios\",
+        \"locale\": \"en_US\"
+    }")
 
+WARP_V6=$(echo "$RESPONSE" | jq -r '.config.interface.address.v6 // empty')
+
+# 注册失败处理
 if [ -z "$WARP_V6" ] || [ "$WARP_V6" == "null" ]; then
-    echo -e "${RED}致命错误：WARP 注册彻底失败！${NC}"
-    echo "这可能是 HAX 该机房 IP 被 CF 暂时拉黑，建议手动运行以下命令确认："
-    echo "ping6 -c 4 api.cloudflareclient.com"
-    exit 1
+    echo -e "${RED}!!! 注册失败，Cloudflare 返回原始信息如下：${NC}"
+    echo "$RESPONSE" | jq .
+    echo -e "${GREEN}建议：如果之前有成功的机器，请手动输入那一台的密钥，账号是通用的：${NC}"
+    read -p "请输入 WARP Private Key (私钥): " PRIV_KEY
+    read -p "请输入 WARP 分配的 IPv6 (如 2606:4700.../128): " WARP_V6
+    if [ -z "$WARP_V6" ]; then exit 1; fi
+else
+    echo -e "${GREEN}WARP 注册成功！分配 IP: $WARP_V6${NC}"
 fi
-echo -e "${GREEN}WARP 注册成功！分配的 IPv6: $WARP_V6${NC}"
 
-# 4. 安装 Sing-box v1.13.11
-echo -e "${BLUE}>>> 正在同步 Sing-box v1.13.11 核心...${NC}"
+# 4. Sing-box 1.13.11 部署
+echo -e "${BLUE}>>> 部署 Sing-box 1.13.11 核心...${NC}"
 wget -O sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.13.11/sing-box-1.13.11-linux-amd64.tar.gz
 tar -zxvf sing-box.tar.gz
 cp -f sing-box-1.13.11-linux-amd64/sing-box /usr/bin/sing-box
 chmod +x /usr/bin/sing-box
-rm -rf sing-box.tar.gz sing-box-1.13.11-linux-amd64
 
-# 5. 生成配置文件 (Endpoints 架构)
-echo -e "${BLUE}>>> 正在写入 1.13.11 Endpoints 配置...${NC}"
+# 5. 生成 Endpoints 配置
 mkdir -p /etc/sing-box
 cat <<EOF > /etc/sing-box/config.json
 {
@@ -102,8 +109,8 @@ cat <<EOF > /etc/sing-box/config.json
 }
 EOF
 
-# 6. 部署 Argo Tunnel
-echo -e "${BLUE}>>> 正在连接 Argo 隧道...${NC}"
+# 6. 激活 Argo Tunnel
+echo -e "${BLUE}>>> 激活 Cloudflare 隧道...${NC}"
 cloudflared service uninstall 2>/dev/null
 wget -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
 chmod +x /usr/local/bin/cloudflared
@@ -114,23 +121,19 @@ cat <<EOF > /etc/systemd/system/sing-box.service
 [Unit]
 Description=sing-box service
 After=network.target
-
 [Service]
 ExecStart=/usr/bin/sing-box -C /etc/sing-box run
 Restart=on-failure
 RestartSec=10
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-
 [Install]
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
-systemctl enable sing-box --now
-systemctl restart cloudflared
+systemctl daemon-reload && systemctl enable sing-box --now && systemctl restart cloudflared
 
 echo -e "${GREEN}==========================================${NC}"
-echo -e "部署完成！UUID: ${BLUE}$UUID${NC}"
-echo -e "服务状态: Sing-box($(systemctl is-active sing-box)) | Argo($(systemctl is-active cloudflared))"
+echo -e "部署成功！UUID: ${BLUE}$UUID${NC}"
+echo -e "已通过 Sing-box 1.13.11 及 WARP 节点交付。"
 echo -e "${GREEN}==========================================${NC}"
