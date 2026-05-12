@@ -1,47 +1,30 @@
 #!/bin/bash
 
-# 1. 强建目录 (包含服务需要的 Data 目录)
+# 1. 强建目录
 mkdir -p /etc/sing-box
 mkdir -p /var/lib/sing-box
 
-# 2. 安装 cloudflared
-if [ ! -f "/usr/local/bin/cloudflared" ]; then
-    echo "正在安装 cloudflared..."
-    ARCH=$(uname -m)
-    [ "$ARCH" == "x86_64" ] && ARCH="amd64" || ARCH="arm64"
-    wget -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$ARCH
-    chmod +x /usr/local/bin/cloudflared
-fi
-
-# 3. 安装 Sing-box
-if [ ! -f "/usr/bin/sing-box" ]; then
-    echo "正在安装 Sing-box..."
-    LAST_VER=$(curl -Ls https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
-    [ -z "$LAST_VER" ] && LAST_VER="1.13.11"
-    ARCH=$(uname -m)
-    [ "$ARCH" == "x86_64" ] && ARCH="amd64" || ARCH="arm64"
-    wget -O sing-box.deb "https://github.com/SagerNet/sing-box/releases/download/v${LAST_VER}/sing-box_${LAST_VER}_linux_${ARCH}.deb"
-    dpkg -i sing-box.deb
-    rm -f sing-box.deb
-fi
-
-# 4. 自动提取 WARP 数据
+# 2. 自动提取 WARP 数据 (从你安装好的非全局 WARP 中提取)
 WARP_CONF="/etc/wireguard/warp.conf"
+if [ ! -f "$WARP_CONF" ]; then
+    echo "❌ 错误：未发现 $WARP_CONF，说明你还没装 WARP。请先 bash menu.sh 选 3 安装双栈非全局！"
+    exit 1
+fi
+
 PK=$(grep "PrivateKey" $WARP_CONF | awk -F' = ' '{print $2}')
 V4=$(grep "Address" $WARP_CONF | grep "\." | awk -F' = ' '{print $2}')
 V6=$(grep "Address" $WARP_CONF | grep ":" | awk -F' = ' '{print $2}')
 RES_VAL=$(grep -i "Reserved" $WARP_CONF | awk -F'=' '{print $2}' | tr -d ' #[]')
 [ -z "$RES_VAL" ] && RES="[0,0,0]" || RES="[${RES_VAL}]"
 
-# 5. 交互输入 (直接对齐网页端)
-echo "-------------------------------------------------------"
-read -p "请输入网页端设置的本地端口 (默认 60001): " IN_PORT
+# 3. 交互输入
+echo "--- 非全局模式配置 ---"
+read -p "网页端填的本地端口 (默认 60001): " IN_PORT
 IN_PORT=${IN_PORT:-60001}
-read -p "请输入你的 Argo Tunnel Token: " ARGO_TOKEN
-read -p "请输入你的 Argo 域名: " ARGO_DOMAIN
-echo "-------------------------------------------------------"
+read -p "Argo Token: " ARGO_TOKEN
+read -p "Argo 域名: " ARGO_DOMAIN
 
-# 6. 生成配置 (核心修复：server -> address, server_port -> port)
+# 4. 生成配置 (严格对齐 1.13.11 语法)
 cat <<EOF > /etc/sing-box/config.json
 {
   "log": { "level": "info", "timestamp": true },
@@ -82,13 +65,16 @@ cat <<EOF > /etc/sing-box/config.json
     { "type": "direct", "tag": "direct" }
   ],
   "route": {
-    "rules": [{ "inbound": "vless-in", "outbound": "warp-out" }],
+    "rules": [
+      { "inbound": "vless-in", "outbound": "warp-out" }
+    ],
     "final": "warp-out"
   }
 }
 EOF
 
-# 7. 配置 cloudflared
+# 5. 安装/启动服务 (保持 cloudflared 走原生网络)
+systemctl stop cloudflared 2>/dev/null
 cat <<EOF > /etc/systemd/system/cloudflared.service
 [Unit]
 Description=cloudflared
@@ -103,12 +89,10 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-# 8. 强力重启
 systemctl daemon-reload
 systemctl enable --now sing-box cloudflared
 systemctl restart sing-box cloudflared
 
-# 9. 验收自检 (如果还报错，这行能看到具体是哪行写错了)
+echo "--- 验收自检 ---"
 /usr/bin/sing-box check -C /etc/sing-box
-echo "-------------------------------------------------------"
 systemctl status sing-box --no-pager
