@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 1. 彻底清理环境 (解决 -C 参数加载旧文件的问题)
+# 1. 物理清空，防止 -C 参数加载旧的或残留的实验文件
 rm -rf /etc/sing-box/*
 mkdir -p /etc/sing-box /var/lib/sing-box
 
@@ -18,7 +18,8 @@ IN_PORT=${IN_PORT:-60001}
 read -p "Argo Token: " ARGO_TOKEN
 read -p "Argo 域名: " ARGO_DOMAIN
 
-# 4. 生成 1.13.x 官方标准配置 (核心修复：DNS 和 WireGuard 结构)
+# 4. 生成 1.13.x 官方标准 JSON
+# 重点：DNS servers 必须全部带 tag，且 address 必须是纯字符串，禁止 legacy 结构
 cat <<EOF > /etc/sing-box/config.json
 {
   "log": {
@@ -27,8 +28,19 @@ cat <<EOF > /etc/sing-box/config.json
   },
   "dns": {
     "servers": [
-      { "tag": "dns-remote", "address": "https://8.8.8.8/dns-query", "detour": "warp-out" },
-      { "tag": "dns-local", "address": "2606:4700:4700::1111", "detour": "direct" }
+      {
+        "tag": "dns_remote",
+        "address": "https://1.1.1.1/dns-query",
+        "detour": "warp-out"
+      },
+      {
+        "tag": "dns_local",
+        "address": "2001:4860:4860::1111",
+        "detour": "direct"
+      }
+    ],
+    "rules": [
+      { "outbound": "any", "server": "dns_remote" }
     ],
     "strategy": "prefer_ipv6"
   },
@@ -50,8 +62,8 @@ cat <<EOF > /etc/sing-box/config.json
       "private_key": "$PK",
       "peers": [
         {
-          "address": "2606:4700:d0::a29f:c001",
-          "port": 2408,
+          "server": "2606:4700:d0::a29f:c001",
+          "server_port": 2408,
           "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
           "reserved": $RES
         }
@@ -71,7 +83,7 @@ cat <<EOF > /etc/sing-box/config.json
 }
 EOF
 
-# 5. 配置 cloudflared
+# 5. 配置 cloudflared 服务
 cat <<EOF > /etc/systemd/system/cloudflared.service
 [Unit]
 Description=cloudflared
@@ -86,11 +98,11 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-# 6. 重启服务并执行严格自检
+# 6. 强力重载启动
 systemctl daemon-reload
 systemctl restart sing-box cloudflared
 
-echo "--- 1.13.x 语法自检结果 ---"
+echo "--- 1.13.x 语法校验结果 ---"
 /usr/bin/sing-box check -c /etc/sing-box/config.json
 echo "-------------------------------------------------------"
 systemctl status sing-box --no-pager
