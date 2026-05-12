@@ -1,48 +1,61 @@
 #!/bin/bash
 
 # ========================================================
-# HAX 纯 IPv6 VPS 终极全自动部署脚本 (Sing-box 1.13.11)
-# 自动项：WARP注册、UUID生成、内核下载、Endpoint构建
+# HAX 纯 IPv6 VPS 自动化部署脚本 (V2 修正版)
+# 针对 1.13.11 锁定语法 & 强制 WARP 注册修复
 # ========================================================
 
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
+RED='\033[0;31m'
 NC='\033[0m'
 
-echo -e "${BLUE}>>> 乙方项目组已就位，开始自动化安装流程...${NC}"
+echo -e "${BLUE}>>> 乙方项目组：正在进行系统环境初始化...${NC}"
+# 预先杀掉可能存在的进程，解决 Text file busy
+systemctl stop sing-box cloudflared 2>/dev/null
 apt update && apt install -y wget tar curl sudo jq wireguard-tools
 
 # 1. 变量交互输入
-echo -e "${GREEN}>>> 请输入必要参数：${NC}"
+echo -e "${GREEN}>>> 参数配置阶段：${NC}"
 read -p "1. 输入 Cloudflare Tunnel Token: " ARGO_TOKEN
-read -p "2. 输入 Argo 隧道域名 (如 us3.989269.xyz): " ARGO_DOMAIN
+read -p "2. 输入 Argo 隧道域名: " ARGO_DOMAIN
 read -p "3. 输入 Sing-box 监听端口 (默认 12345): " SB_PORT
 SB_PORT=${SB_PORT:-12345}
 
-# 2. 自动生成 VLESS UUID
+# 2. 自动生成 UUID
 UUID=$(cat /proc/sys/kernel/random/uuid)
 
-# 3. 自动化获取 WARP 身份信息
-echo -e "${BLUE}>>> 正在与 Cloudflare 握手，自动申请 WARP 账号...${NC}"
+# 3. 自动化获取 WARP 身份 (修复注册 null 问题)
+echo -e "${BLUE}>>> 正在尝试强制通过 IPv6 注册 WARP 账号...${NC}"
 PRIV_KEY=$(wg genkey)
 PUB_KEY=$(echo "$PRIV_KEY" | wg pubkey)
 
-REG_JSON=$(curl -s -X POST "https://api.cloudflareclient.com/v0a2158/reg" \
-    -H "Content-Type: application/json" \
-    -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"key\":\"$PUB_KEY\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
+# 使用更稳定的注册接口，并增加错误重试
+for i in {1..3}; do
+    REG_JSON=$(curl -6 -s -X POST "https://api.cloudflareclient.com/v0a2158/reg" \
+        -H "Content-Type: application/json" \
+        -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"key\":\"$PUB_KEY\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
+    WARP_V6=$(echo "$REG_JSON" | jq -r '.config.interface.address.v6 // empty')
+    if [ ! -z "$WARP_V6" ]; then break; fi
+    echo "注册尝试 $i 失败，正在重试..."
+    sleep 2
+done
 
-WARP_V6=$(echo "$REG_JSON" | jq -r '.config.interface.address.v6')
+if [ -z "$WARP_V6" ]; then
+    echo -e "${RED}致命错误：WARP 注册失败，请检查 VPS 的 IPv6 网络连通性！${NC}"
+    exit 1
+fi
+echo -e "${GREEN}WARP 注册成功：$WARP_V6${NC}"
 
-# 4. 下载全功能版 Sing-box v1.13.11
-echo -e "${BLUE}>>> 正在抓取 Sing-box v1.13.11 核心...${NC}"
+# 4. 安装 Sing-box v1.13.11
+echo -e "${BLUE}>>> 安装核心组件 v1.13.11...${NC}"
 wget -O sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.13.11/sing-box-1.13.11-linux-amd64.tar.gz
 tar -zxvf sing-box.tar.gz
-mv sing-box-1.13.11-linux-amd64/sing-box /usr/bin/sing-box
+cp -f sing-box-1.13.11-linux-amd64/sing-box /usr/bin/sing-box
 chmod +x /usr/bin/sing-box
 rm -rf sing-box.tar.gz sing-box-1.13.11-linux-amd64
 
-# 5. 生成最新的 Endpoints 架构配置文件
-echo -e "${BLUE}>>> 正在构建 1.13.11 专属配置文件...${NC}"
+# 5. 生成配置文件 (Endpoints 架构)
 mkdir -p /etc/sing-box
 cat <<EOF > /etc/sing-box/config.json
 {
@@ -78,20 +91,18 @@ cat <<EOF > /etc/sing-box/config.json
   "outbounds": [
     { "type": "direct", "tag": "direct" }
   ],
-  "route": {
-    "final": "warp-node"
-  }
+  "route": { "final": "warp-node" }
 }
 EOF
 
-# 6. 部署 Argo Tunnel 服务
-echo -e "${BLUE}>>> 正在激活 Cloudflare 隧道...${NC}"
+# 6. 部署 Argo Tunnel (解决 Text file busy)
+echo -e "${BLUE}>>> 激活 Argo 隧道...${NC}"
+cloudflared service uninstall 2>/dev/null
 wget -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
 chmod +x /usr/local/bin/cloudflared
-cloudflared service uninstall 2>/dev/null
-cloudflared service install $ARGO_TOKEN
+cloudflared service install "$ARGO_TOKEN"
 
-# 7. 配置并启动系统服务
+# 7. 系统服务配置
 cat <<EOF > /etc/systemd/system/sing-box.service
 [Unit]
 Description=sing-box service
@@ -112,16 +123,13 @@ systemctl daemon-reload
 systemctl enable sing-box --now
 systemctl restart cloudflared
 
-# 8. 成果展示
+# 8. 验收输出
 echo -e "${GREEN}==========================================${NC}"
-echo -e "${GREEN}工程验收通过！请保存以下连接信息：${NC}"
-echo -e "地址 (Address): ${BLUE}$ARGO_DOMAIN${NC}"
-echo -e "端口 (Port): ${BLUE}443${NC} (由 Argo 映射)"
-echo -e "用户 ID (UUID): ${BLUE}$UUID${NC}"
-echo -e "传输方式 (Transport): ${BLUE}WebSocket (ws)${NC}"
-echo -e "路径 (Path): ${BLUE}/vless${NC}"
-echo -e "TLS: ${BLUE}开启 (Enabled)${NC}"
-echo -e "${GREEN}------------------------------------------${NC}"
-echo -e "WARP 虚拟内网 IPv6: $WARP_V6"
-echo -e "Sing-box 状态: $(systemctl is-active sing-box)"
+echo -e "验收成功！请保存配置：${NC}"
+echo -e "域名: ${BLUE}$ARGO_DOMAIN${NC} / 端口: ${BLUE}443${NC}"
+echo -e "UUID: ${BLUE}$UUID${NC}"
+echo -e "路径: ${BLUE}/vless${NC} / 传输: ${BLUE}ws${NC}"
+echo -e "WARP IP: $WARP_V6"
+echo -e "------------------------------------------${NC}"
+echo -e "服务自检：Sing-box($(systemctl is-active sing-box)) | Argo($(systemctl is-active cloudflared))"
 echo -e "${GREEN}==========================================${NC}"
