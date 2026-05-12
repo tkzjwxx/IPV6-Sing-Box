@@ -1,103 +1,74 @@
 #!/bin/bash
 
-# ========================================================
-# HAX 纯 IPv6 VPS 自动化部署脚本 (V6 仓库交付版)
-# 修复：JSON 数组格式、Argo 隧道强制 IPv6 协议
-# ========================================================
-
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-RED='\033[0;31m'
-NC='\033[0m'
-
-# 1. 清理旧环境
-echo -e "${BLUE}>>> 乙方项目组：正在清理旧服务并安装依赖...${NC}"
-systemctl stop sing-box cloudflared 2>/dev/null
-apt update && apt install -y wget tar curl sudo jq wireguard-tools
-
-# 2. 收集变量
-echo -e "${GREEN}>>> 请输入配置参数：${NC}"
-read -p "1. 输入 Cloudflare Tunnel Token: " ARGO_TOKEN
-read -p "2. 输入 Argo 隧道域名: " ARGO_DOMAIN
-read -p "3. 输入 Sing-box 监听端口 (默认 12345): " SB_PORT
-SB_PORT=${SB_PORT:-12345}
-UUID=$(cat /proc/sys/kernel/random/uuid)
-
-# 3. WARP 账号处理 (带手动回退)
-echo -e "${BLUE}>>> 正在尝试自动注册 WARP...${NC}"
-PRIV_KEY=$(wg genkey)
-PUB_KEY=$(echo "$PRIV_KEY" | wg pubkey)
-REG_JSON=$(curl -6 -s -X POST "https://api.cloudflareclient.com/v0a2158/reg" \
-    -H "User-Agent: okhttp/3.12.1" -H "Content-Type: application/json" \
-    -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"key\":\"$PUB_KEY\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
-WARP_V6=$(echo "$REG_JSON" | jq -r '.config.interface.address.v6 // empty')
-
-if [ -z "$WARP_V6" ] || [ "$WARP_V6" == "null" ]; then
-    echo -e "${RED}!!! 自动注册失败，请手动输入之前获取的信息：${NC}"
-    read -p "请输入 WARP Private Key (私钥): " PRIV_KEY
-    read -p "请输入 WARP IPv6 (格式如 2606:4700...): " WARP_V6
-    # 自动补全 /128 掩码
-    [[ $WARP_V6 != */128 ]] && WARP_V6="${WARP_V6}/128"
+# 1. 基础环境检查与安装
+mkdir -p /etc/sing-box
+if [ ! -f "/usr/bin/sing-box" ]; then
+    echo "正在安装 Sing-box..."
+    bash <(curl -Ls https://raw.githubusercontent.com/SagerNet/sing-box/main/install.sh)
 fi
 
-# 4. 下载并安装 Sing-box 1.13.11
-echo -e "${BLUE}>>> 下载核心组件...${NC}"
-wget -O sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.13.11/sing-box-1.13.11-linux-amd64.tar.gz
-tar -zxvf sing-box.tar.gz
-cp -f sing-box-1.13.11-linux-amd64/sing-box /usr/bin/sing-box
-chmod +x /usr/bin/sing-box
-rm -rf sing-box.tar.gz sing-box-1.13.11-linux-amd64
+# 2. 自动提取 WARP 核心数据
+WARP_CONF="/etc/wireguard/warp.conf"
+if [ ! -f "$WARP_CONF" ]; then
+    echo "错误：未发现 $WARP_CONF，请先运行 WARP 脚本安装双栈！"
+    exit 1
+fi
 
-# 5. 生成标准 JSON 配置 (修复数组格式问题)
-mkdir -p /etc/sing-box
+echo "正在提取 WARP 配置..."
+PK=$(grep "PrivateKey" $WARP_CONF | awk -F' = ' '{print $2}')
+V4=$(grep "Address" $WARP_CONF | grep "172.16" | awk -F' = ' '{print $2}')
+V6=$(grep "Address" $WARP_CONF | grep ":" | awk -F' = ' '{print $2}')
+# 提取 Reserved，兼容注释掉的情况
+RES_RAW=$(grep "Reserved" $WARP_CONF | cut -d "[" -f 2 | cut -d "]" -f 1)
+RES="[${RES_RAW}]"
+
+# 3. 交互输入 Argo 变量
+read -p "请输入你的 Argo Tunnel Token: " ARGO_TOKEN
+read -p "请输入你的 Argo 域名 (例如: hx.abc.com): " ARGO_DOMAIN
+
+# 4. 自动生成 UUID
+MY_UUID=$(cat /proc/sys/kernel/random/uuid)
+
+# 5. 生成 Sing-box 配置文件
 cat <<EOF > /etc/sing-box/config.json
 {
   "log": { "level": "info", "timestamp": true },
   "dns": { "strategy": "prefer_ipv6" },
-  "endpoints": [
-    {
-      "type": "wireguard",
-      "tag": "warp-node",
-      "address": [
-        "172.16.0.2/32",
-        "$WARP_V6"
-      ],
-      "private_key": "$PRIV_KEY",
-      "mtu": 1280,
-      "peers": [
-        {
-          "address": "2606:4700:d0::a29f:c001",
-          "port": 2408,
-          "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
-          "allowed_ips": ["0.0.0.0/0", "::/0"]
-        }
-      ]
-    }
-  ],
   "inbounds": [
     {
       "type": "vless",
       "tag": "vless-in",
       "listen": "::",
-      "listen_port": $SB_PORT,
-      "users": [{ "uuid": "$UUID" }],
+      "listen_port": 60001,
+      "users": [{ "uuid": "$MY_UUID" }],
       "transport": { "type": "ws", "path": "/vless" }
     }
   ],
   "outbounds": [
+    {
+      "type": "wireguard",
+      "tag": "warp-out",
+      "local_address": ["$V4", "$V6"],
+      "private_key": "$PK",
+      "peers": [
+        {
+          "server": "2606:4700:d0::a29f:c001",
+          "server_port": 2408,
+          "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+          "reserved": $RES,
+          "allowed_ips": ["0.0.0.0/0", "::/0"]
+        }
+      ],
+      "mtu": 1280
+    },
     { "type": "direct", "tag": "direct" }
   ],
-  "route": { "final": "warp-node" }
+  "route": { "final": "warp-out" }
 }
 EOF
 
-# 6. 安装 Argo 隧道并强制 IPv6 协议
-echo -e "${BLUE}>>> 正在部署 Argo 隧道并设置 IPv6 优先级...${NC}"
-wget -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-chmod +x /usr/local/bin/cloudflared
-cloudflared service uninstall 2>/dev/null
-
-# 生成 cloudflared 服务文件，强制使用 http2 和 IPv6 边缘节点
+# 6. 设置 Argo Tunnel 服务
+echo "正在配置 Argo Tunnel..."
 cat <<EOF > /etc/systemd/system/cloudflared.service
 [Unit]
 Description=cloudflared
@@ -105,42 +76,28 @@ After=network.target
 
 [Service]
 TimeoutStartSec=0
-Type=notify
+Type=simple
 ExecStart=/usr/local/bin/cloudflared tunnel --protocol http2 --edge-ip-version 6 run --token $ARGO_TOKEN
 Restart=on-failure
 RestartSec=5
+KillMode=process
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# 7. 配置 Sing-box 系统服务
-cat <<EOF > /etc/systemd/system/sing-box.service
-[Unit]
-Description=sing-box service
-After=network.target
-[Service]
-ExecStart=/usr/bin/sing-box -C /etc/sing-box run
-Restart=on-failure
-RestartSec=10
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# 8. 启动与验证
-echo -e "${BLUE}>>> 启动服务...${NC}"
+# 7. 启动服务
 systemctl daemon-reload
-systemctl enable sing-box cloudflared --now
+systemctl enable sing-box cloudflared
 systemctl restart sing-box cloudflared
 
-echo -e "${GREEN}==========================================${NC}"
-echo -e "部署成功！请保存验收单：${NC}"
-echo -e "地址: ${BLUE}$ARGO_DOMAIN${NC} / 端口: ${BLUE}443${NC}"
-echo -e "UUID: ${BLUE}$UUID${NC}"
-echo -e "路径: ${BLUE}/vless${NC} / 传输: ${BLUE}ws${NC}"
-echo -e "------------------------------------------${NC}"
-echo -e "Sing-box 状态: \$(systemctl is-active sing-box)"
-echo -e "Argo 隧道状态: \$(systemctl is-active cloudflared)"
-echo -e "${GREEN}==========================================${NC}"
+# 8. 输出客户端配置信息
+echo "-------------------------------------------------------"
+echo "🎉 部署成功！"
+echo "UUID: $MY_UUID"
+echo "端口: 443 (通过 Argo)"
+echo "路径: /vless"
+echo "域名: $ARGO_DOMAIN"
+echo "传输协议: WebSocket"
+echo "-------------------------------------------------------"
+systemctl status sing-box --no-pager
