@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ========================================================
-# HAX 纯 IPv6 VPS 自动化部署脚本 (V2 修正版)
-# 针对 1.13.11 锁定语法 & 强制 WARP 注册修复
+# HAX 纯 IPv6 VPS 自动化部署脚本 (V3 强力注册版)
+# 针对 WARP 注册失败 (null/failed) 做了深度伪装
 # ========================================================
 
 GREEN='\033[0;32m'
@@ -10,14 +10,13 @@ BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-echo -e "${BLUE}>>> 乙方项目组：正在进行系统环境初始化...${NC}"
-# 预先杀掉可能存在的进程，解决 Text file busy
+echo -e "${BLUE}>>> 正在进行环境清理与进程强杀...${NC}"
 systemctl stop sing-box cloudflared 2>/dev/null
 apt update && apt install -y wget tar curl sudo jq wireguard-tools
 
-# 1. 变量交互输入
-echo -e "${GREEN}>>> 参数配置阶段：${NC}"
-read -p "1. 输入 Cloudflare Tunnel Token: " ARGO_TOKEN
+# 1. 变量交互
+echo -e "${GREEN}>>> 参数配置：${NC}"
+read -p "1. 输入 Argo Tunnel Token: " ARGO_TOKEN
 read -p "2. 输入 Argo 隧道域名: " ARGO_DOMAIN
 read -p "3. 输入 Sing-box 监听端口 (默认 12345): " SB_PORT
 SB_PORT=${SB_PORT:-12345}
@@ -25,30 +24,37 @@ SB_PORT=${SB_PORT:-12345}
 # 2. 自动生成 UUID
 UUID=$(cat /proc/sys/kernel/random/uuid)
 
-# 3. 自动化获取 WARP 身份 (修复注册 null 问题)
-echo -e "${BLUE}>>> 正在尝试强制通过 IPv6 注册 WARP 账号...${NC}"
+# 3. 自动化获取 WARP 身份 (V3 伪装注册逻辑)
+echo -e "${BLUE}>>> 正在发起伪装注册，正在调教 Cloudflare 接口...${NC}"
 PRIV_KEY=$(wg genkey)
 PUB_KEY=$(echo "$PRIV_KEY" | wg pubkey)
 
-# 使用更稳定的注册接口，并增加错误重试
-for i in {1..3}; do
+# 增加 User-Agent 伪装和更稳定的 API 节点
+for i in {1..5}; do
     REG_JSON=$(curl -6 -s -X POST "https://api.cloudflareclient.com/v0a2158/reg" \
+        -H "User-Agent: okhttp/3.12.1" \
         -H "Content-Type: application/json" \
         -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"key\":\"$PUB_KEY\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
+    
     WARP_V6=$(echo "$REG_JSON" | jq -r '.config.interface.address.v6 // empty')
-    if [ ! -z "$WARP_V6" ]; then break; fi
-    echo "注册尝试 $i 失败，正在重试..."
-    sleep 2
+    
+    if [ ! -z "$WARP_V6" ] && [ "$WARP_V6" != "null" ]; then
+        break
+    fi
+    echo -e "${RED}注册尝试 $i 失败，CF 响应为空或拒绝。正在变换策略重试...${NC}"
+    sleep 3
 done
 
-if [ -z "$WARP_V6" ]; then
-    echo -e "${RED}致命错误：WARP 注册失败，请检查 VPS 的 IPv6 网络连通性！${NC}"
+if [ -z "$WARP_V6" ] || [ "$WARP_V6" == "null" ]; then
+    echo -e "${RED}致命错误：WARP 注册彻底失败！${NC}"
+    echo "这可能是 HAX 该机房 IP 被 CF 暂时拉黑，建议手动运行以下命令确认："
+    echo "ping6 -c 4 api.cloudflareclient.com"
     exit 1
 fi
-echo -e "${GREEN}WARP 注册成功：$WARP_V6${NC}"
+echo -e "${GREEN}WARP 注册成功！分配的 IPv6: $WARP_V6${NC}"
 
 # 4. 安装 Sing-box v1.13.11
-echo -e "${BLUE}>>> 安装核心组件 v1.13.11...${NC}"
+echo -e "${BLUE}>>> 正在同步 Sing-box v1.13.11 核心...${NC}"
 wget -O sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.13.11/sing-box-1.13.11-linux-amd64.tar.gz
 tar -zxvf sing-box.tar.gz
 cp -f sing-box-1.13.11-linux-amd64/sing-box /usr/bin/sing-box
@@ -56,6 +62,7 @@ chmod +x /usr/bin/sing-box
 rm -rf sing-box.tar.gz sing-box-1.13.11-linux-amd64
 
 # 5. 生成配置文件 (Endpoints 架构)
+echo -e "${BLUE}>>> 正在写入 1.13.11 Endpoints 配置...${NC}"
 mkdir -p /etc/sing-box
 cat <<EOF > /etc/sing-box/config.json
 {
@@ -95,14 +102,14 @@ cat <<EOF > /etc/sing-box/config.json
 }
 EOF
 
-# 6. 部署 Argo Tunnel (解决 Text file busy)
-echo -e "${BLUE}>>> 激活 Argo 隧道...${NC}"
+# 6. 部署 Argo Tunnel
+echo -e "${BLUE}>>> 正在连接 Argo 隧道...${NC}"
 cloudflared service uninstall 2>/dev/null
 wget -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
 chmod +x /usr/local/bin/cloudflared
 cloudflared service install "$ARGO_TOKEN"
 
-# 7. 系统服务配置
+# 7. 启动服务
 cat <<EOF > /etc/systemd/system/sing-box.service
 [Unit]
 Description=sing-box service
@@ -123,13 +130,7 @@ systemctl daemon-reload
 systemctl enable sing-box --now
 systemctl restart cloudflared
 
-# 8. 验收输出
 echo -e "${GREEN}==========================================${NC}"
-echo -e "验收成功！请保存配置：${NC}"
-echo -e "域名: ${BLUE}$ARGO_DOMAIN${NC} / 端口: ${BLUE}443${NC}"
-echo -e "UUID: ${BLUE}$UUID${NC}"
-echo -e "路径: ${BLUE}/vless${NC} / 传输: ${BLUE}ws${NC}"
-echo -e "WARP IP: $WARP_V6"
-echo -e "------------------------------------------${NC}"
-echo -e "服务自检：Sing-box($(systemctl is-active sing-box)) | Argo($(systemctl is-active cloudflared))"
+echo -e "部署完成！UUID: ${BLUE}$UUID${NC}"
+echo -e "服务状态: Sing-box($(systemctl is-active sing-box)) | Argo($(systemctl is-active cloudflared))"
 echo -e "${GREEN}==========================================${NC}"
