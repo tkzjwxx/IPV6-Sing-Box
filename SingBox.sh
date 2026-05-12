@@ -1,148 +1,127 @@
 #!/bin/bash
-clear
-echo "===================================================="
-echo "    HAX VPS 终极防关联部署脚本 (全自动 WARP 版)"
-echo "===================================================="
-echo ""
 
-# 交互式获取关键参数 (已剔除手动 WARP 输入)
-read -p "1. 请输入 VLESS UUID (不填则自动生成): " UUID
-if [ -z "$UUID" ]; then
-    UUID=$(cat /proc/sys/kernel/random/uuid)
-    echo "   -> 已自动生成 UUID: $UUID"
-fi
+# ========================================================
+# HAX 纯 IPv6 VPS 终极全自动部署脚本 (Sing-box 1.13.11)
+# 自动项：WARP注册、UUID生成、内核下载、Endpoint构建
+# ========================================================
 
-read -p "2. 请输入 Cloudflare Argo Token: " ARGO_TOKEN
-read -p "3. 请输入绑定的 Argo 隧道域名 (如 us3.989269.xyz): " ARGO_DOMAIN
-read -p "4. 请输入你的优选域名 (如 sub.danfeng.eu.org): " OPT_DOMAIN
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-echo ""
-echo "===================================================="
-echo "参数收集完毕，开始全自动施工..."
-echo "===================================================="
+echo -e "${BLUE}>>> 乙方项目组已就位，开始自动化安装流程...${NC}"
+apt update && apt install -y wget tar curl sudo jq wireguard-tools
 
-# 1. 物理锁死 DNS64
-echo "[1/7] 打破 IPv6 孤岛 (配置 DNS64)..."
-rm -f /etc/resolv.conf
-echo -e "nameserver 2001:67c:2b0::4\nnameserver 2001:67c:2b0::6\nnameserver 2606:4700:4700::1111" > /etc/resolv.conf
+# 1. 变量交互输入
+echo -e "${GREEN}>>> 请输入必要参数：${NC}"
+read -p "1. 输入 Cloudflare Tunnel Token: " ARGO_TOKEN
+read -p "2. 输入 Argo 隧道域名 (如 us3.989269.xyz): " ARGO_DOMAIN
+read -p "3. 输入 Sing-box 监听端口 (默认 12345): " SB_PORT
+SB_PORT=${SB_PORT:-12345}
 
-# 2. 自动获取 WARP 凭证 (核心升级)
-echo "[2/7] 正在向 Cloudflare 自动申请 WARP 凭证 (请稍候 5-10 秒)..."
-wget -q -O wgcf https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_amd64
-chmod +x wgcf
-./wgcf register --accept-tos >/dev/null 2>&1
-./wgcf generate >/dev/null 2>&1
+# 2. 自动生成 VLESS UUID
+UUID=$(cat /proc/sys/kernel/random/uuid)
 
-WARP_KEY=$(grep '^PrivateKey' wgcf-profile.conf | awk '{print $3}')
-WARP_V6=$(grep '^Address' wgcf-profile.conf | grep ':' | awk '{print $3}')
+# 3. 自动化获取 WARP 身份信息
+echo -e "${BLUE}>>> 正在与 Cloudflare 握手，自动申请 WARP 账号...${NC}"
+PRIV_KEY=$(wg genkey)
+PUB_KEY=$(echo "$PRIV_KEY" | wg pubkey)
 
-if [ -z "$WARP_KEY" ] || [ -z "$WARP_V6" ]; then
-    echo -e "\e[31m[错误] WARP 自动申请失败！请检查网络或稍后重试。\e[0m"
-    exit 1
-fi
-echo "   -> 成功获取 WARP 私钥与 IPv6 地址！"
+REG_JSON=$(curl -s -X POST "https://api.cloudflareclient.com/v0a2158/reg" \
+    -H "Content-Type: application/json" \
+    -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"key\":\"$PUB_KEY\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
 
-# 3. 突破系统并发限制
-echo "[3/7] 注入底层性能优化参数..."
-sed -i '/soft nofile/d' /etc/security/limits.conf
-sed -i '/hard nofile/d' /etc/security/limits.conf
-echo "* soft nofile 65535" >> /etc/security/limits.conf
-echo "* hard nofile 65535" >> /etc/security/limits.conf
-ulimit -n 65535
-cat <<EOF > /etc/sysctl.d/99-hax-master.conf
-net.ipv4.tcp_fin_timeout = 15
-net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_max_tw_buckets = 10000
-net.core.rmem_max = 8388608
-net.core.wmem_max = 8388608
-net.ipv4.tcp_mtu_probing = 1
-EOF
-sysctl -p /etc/sysctl.d/99-hax-master.conf 2>/dev/null
+WARP_V6=$(echo "$REG_JSON" | jq -r '.config.interface.address.v6')
 
-# 4. 安装工具组件
-echo "[4/7] 拉取 Sing-box 与 Argo Tunnel..."
-apt update -y >/dev/null 2>&1 && apt install -y curl wget tar >/dev/null 2>&1
-bash <(curl -fsSL https://sing-box.app/install.sh) >/dev/null 2>&1
-curl -sL --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-dpkg -i cloudflared.deb >/dev/null 2>&1
+# 4. 下载全功能版 Sing-box v1.13.11
+echo -e "${BLUE}>>> 正在抓取 Sing-box v1.13.11 核心...${NC}"
+wget -O sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.13.11/sing-box-1.13.11-linux-amd64.tar.gz
+tar -zxvf sing-box.tar.gz
+mv sing-box-1.13.11-linux-amd64/sing-box /usr/bin/sing-box
+chmod +x /usr/bin/sing-box
+rm -rf sing-box.tar.gz sing-box-1.13.11-linux-amd64
 
-# 5. 写入 Sing-box 纯净配置
-echo "[5/7] 正在写入 Sing-box 引擎配置..."
+# 5. 生成最新的 Endpoints 架构配置文件
+echo -e "${BLUE}>>> 正在构建 1.13.11 专属配置文件...${NC}"
 mkdir -p /etc/sing-box
 cat <<EOF > /etc/sing-box/config.json
 {
   "log": { "level": "info", "timestamp": true },
+  "dns": { "strategy": "prefer_ipv6" },
+  "endpoints": [
+    {
+      "type": "wireguard",
+      "tag": "warp-node",
+      "address": ["172.16.0.2/32", "$WARP_V6"],
+      "private_key": "$PRIV_KEY",
+      "mtu": 1280,
+      "peers": [
+        {
+          "address": "2606:4700:d0::a29f:c001",
+          "port": 2408,
+          "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+          "allowed_ips": ["0.0.0.0/0", "::/0"]
+        }
+      ]
+    }
+  ],
   "inbounds": [
     {
       "type": "vless",
       "tag": "vless-in",
       "listen": "::",
-      "listen_port": 12345,
-      "users": [{ "uuid": "$UUID", "name": "hax-user" }],
+      "listen_port": $SB_PORT,
+      "users": [{ "uuid": "$UUID" }],
       "transport": { "type": "ws", "path": "/vless" }
     }
   ],
   "outbounds": [
-    {
-      "type": "wireguard",
-      "tag": "warp-out",
-      "server": "engage.cloudflareclient.com",
-      "server_port": 2408,
-      "local_address": ["172.16.0.2/32", "$WARP_V6"],
-      "private_key": "$WARP_KEY",
-      "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
-      "mtu": 1280,
-      "udp_fragment": true
-    },
     { "type": "direct", "tag": "direct" }
   ],
   "route": {
-    "rules": [{ "domain_strategy": "prefer_ipv6", "outbound": "warp-out" }],
-    "final": "warp-out"
+    "final": "warp-node"
   }
 }
 EOF
 
-# 6. 配置 Argo 隧道补丁
-echo "[6/7] 注入 Argo Tunnel 防卡死补丁..."
+# 6. 部署 Argo Tunnel 服务
+echo -e "${BLUE}>>> 正在激活 Cloudflare 隧道...${NC}"
+wget -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+chmod +x /usr/local/bin/cloudflared
 cloudflared service uninstall 2>/dev/null
-cloudflared service install $ARGO_TOKEN >/dev/null 2>&1
-mkdir -p /etc/systemd/system/cloudflared.service.d
-echo -e "[Service]\nEnvironment=\"TUNNEL_PROTOCOL=http2\"" > /etc/systemd/system/cloudflared.service.d/override.conf
+cloudflared service install $ARGO_TOKEN
 
-# 7. 点火
-echo "[7/7] 引擎点火中..."
+# 7. 配置并启动系统服务
+cat <<EOF > /etc/systemd/system/sing-box.service
+[Unit]
+Description=sing-box service
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/sing-box -C /etc/sing-box run
+Restart=on-failure
+RestartSec=10
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 systemctl daemon-reload
-systemctl enable --now sing-box
+systemctl enable sing-box --now
 systemctl restart cloudflared
 
-echo ""
-echo "===================================================="
-echo " 施工完毕！状态检查："
-echo "===================================================="
-systemctl status sing-box --no-pager | grep Active
-systemctl status cloudflared --no-pager | grep Active
-
-echo ""
-echo "===================================================="
-echo " 你的 Windows 客户端配置如下 (直接复制到客户端) :"
-echo "===================================================="
-echo "{
-  \"type\": \"vless\",
-  \"tag\": \"Argo-VLESS-HAX\",
-  \"server\": \"$OPT_DOMAIN\",
-  \"server_port\": 443,
-  \"uuid\": \"$UUID\",
-  \"tls\": {
-    \"enabled\": true,
-    \"server_name\": \"$ARGO_DOMAIN\"
-  },
-  \"transport\": {
-    \"type\": \"ws\",
-    \"path\": \"/vless\",
-    \"headers\": {
-      \"Host\": \"$ARGO_DOMAIN\"
-    }
-  }
-}"
-echo "===================================================="
+# 8. 成果展示
+echo -e "${GREEN}==========================================${NC}"
+echo -e "${GREEN}工程验收通过！请保存以下连接信息：${NC}"
+echo -e "地址 (Address): ${BLUE}$ARGO_DOMAIN${NC}"
+echo -e "端口 (Port): ${BLUE}443${NC} (由 Argo 映射)"
+echo -e "用户 ID (UUID): ${BLUE}$UUID${NC}"
+echo -e "传输方式 (Transport): ${BLUE}WebSocket (ws)${NC}"
+echo -e "路径 (Path): ${BLUE}/vless${NC}"
+echo -e "TLS: ${BLUE}开启 (Enabled)${NC}"
+echo -e "${GREEN}------------------------------------------${NC}"
+echo -e "WARP 虚拟内网 IPv6: $WARP_V6"
+echo -e "Sing-box 状态: $(systemctl is-active sing-box)"
+echo -e "${GREEN}==========================================${NC}"
