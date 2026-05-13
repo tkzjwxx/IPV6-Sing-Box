@@ -40,12 +40,14 @@ cat <<EOF > /etc/sing-box/config.json
     "servers": [
       {
         "tag": "dns_remote",
-        "address": "https://1.1.1.1/dns-query",
+        "type": "udp",
+        "server": "1.1.1.1",
         "detour": "warp-out"
       },
       {
         "tag": "dns_local",
-        "address": "2606:4700:4700::1111",
+        "type": "udp",
+        "server": "2606:4700:4700::1111",
         "detour": "direct"
       }
     ],
@@ -125,7 +127,7 @@ systemctl daemon-reload
 systemctl restart sing-box cloudflared
 
 echo "======================================================="
-echo "🎉 终极自检开始 (不再包含 dns-out 废弃语法)"
+echo "🎉 终极自检开始 (新版 DNS + 扁平出站)"
 /usr/bin/sing-box check -c /etc/sing-box/config.json
 
 if [ $? -eq 0 ]; then
