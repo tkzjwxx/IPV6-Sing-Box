@@ -28,7 +28,7 @@ IN_PORT=60001
 ARGO_TOKEN="eyJhIjoiMTMwZWI0NmFkMGQzNzdhN2Y3Mjk3MzEzNmZlOGM3ZDIiLCJ0IjoiYzU5NGUyZmYtZmE4NC00MGY5LTg3ZWQtYzJmNzAwMjU3NzMxIiwicyI6Ik9EZG1NREl6WWpjdFpHVTJNUzAwT1dFMUxXRXpZbVl0WXpVMVlqUmpNVFk1Wm1NMCJ9"
 
 # ==========================================
-# 4. 生成 1.13.0+ 官方严格标准配置 (彻底删除废弃的 dns.rules)
+# 4. 生成 1.13.x 官方标准配置 (已添加 default_domain_resolver 依据)
 # ==========================================
 cat <<EOF > /etc/sing-box/config.json
 {
@@ -85,6 +85,7 @@ cat <<EOF > /etc/sing-box/config.json
     { "type": "direct", "tag": "direct" }
   ],
   "route": {
+    "default_domain_resolver": "dns_remote",
     "rules": [
       { "inbound": "vless-in", "outbound": "warp-out" }
     ],
@@ -131,11 +132,11 @@ systemctl daemon-reload
 systemctl restart sing-box cloudflared
 
 echo "======================================================="
-echo "🎉 终极自检开始 (剔除 DNS rules)"
+echo "🎉 终极自检开始 (已修复 default_domain_resolver 致命错误)"
 /usr/bin/sing-box check -c /etc/sing-box/config.json
 
 if [ $? -eq 0 ]; then
-    echo "✅ 语法校验通过！"
+    echo "✅ 语法校验完全通过！"
     echo "======================================================="
     systemctl status sing-box --no-pager | grep "Active:"
 else
