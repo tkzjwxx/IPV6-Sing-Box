@@ -22,7 +22,7 @@ RES_VAL=$(grep -i "Reserved" $WARP_CONF | awk -F'=' '{print $2}' | tr -d ' #[]')
 [ -z "$RES_VAL" ] && RES="[0,0,0]" || RES="[${RES_VAL}]"
 
 # ==========================================
-# 3. 参数硬编码 (砍掉 read 交互，防错位)
+# 3. 参数硬编码 (砍掉 read 交互，防终端错位)
 # ==========================================
 IN_PORT=60001
 ARGO_TOKEN="eyJhIjoiMTMwZWI0NmFkMGQzNzdhN2Y3Mjk3MzEzNmZlOGM3ZDIiLCJ0IjoiYzU5NGUyZmYtZmE4NC00MGY5LTg3ZWQtYzJmNzAwMjU3NzMxIiwicyI6Ik9EZG1NREl6WWpjdFpHVTJNUzAwT1dFMUxXRXpZbVl0WXpVMVlqUmpNVFk1Wm1NMCJ9"
@@ -56,6 +56,24 @@ cat <<EOF > /etc/sing-box/config.json
     ],
     "strategy": "prefer_ipv6"
   },
+  "endpoints": [
+    {
+      "type": "wireguard",
+      "tag": "warp-out",
+      "address": ["$V4", "$V6"],
+      "private_key": "$PK",
+      "peers": [
+        {
+          "address": "2606:4700:d0::a29f:c001",
+          "port": 2408,
+          "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+          "reserved": $RES,
+          "allowed_ips": ["0.0.0.0/0", "::/0"]
+        }
+      ],
+      "mtu": 1280
+    }
+  ],
   "inbounds": [
     {
       "type": "vless",
@@ -67,17 +85,6 @@ cat <<EOF > /etc/sing-box/config.json
     }
   ],
   "outbounds": [
-    {
-      "type": "wireguard",
-      "tag": "warp-out",
-      "server": "2606:4700:d0::a29f:c001",
-      "server_port": 2408,
-      "local_address": ["$V4", "$V6"],
-      "private_key": "$PK",
-      "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
-      "reserved": $RES,
-      "mtu": 1280
-    },
     { "type": "direct", "tag": "direct" }
   ],
   "route": {
@@ -127,7 +134,7 @@ systemctl daemon-reload
 systemctl restart sing-box cloudflared
 
 echo "======================================================="
-echo "🎉 终极自检开始 (新版 DNS + 扁平出站)"
+echo "🎉 终极自检开始 (纯血 Endpoints 架构)"
 /usr/bin/sing-box check -c /etc/sing-box/config.json
 
 if [ $? -eq 0 ]; then
