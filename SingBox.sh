@@ -22,13 +22,13 @@ RES_VAL=$(grep -i "Reserved" $WARP_CONF | awk -F'=' '{print $2}' | tr -d ' #[]')
 [ -z "$RES_VAL" ] && RES="[0,0,0]" || RES="[${RES_VAL}]"
 
 # ==========================================
-# 3. 参数硬编码 (砍掉 read 交互，防终端错位)
+# 3. 参数硬编码
 # ==========================================
 IN_PORT=60001
 ARGO_TOKEN="eyJhIjoiMTMwZWI0NmFkMGQzNzdhN2Y3Mjk3MzEzNmZlOGM3ZDIiLCJ0IjoiYzU5NGUyZmYtZmE4NC00MGY5LTg3ZWQtYzJmNzAwMjU3NzMxIiwicyI6Ik9EZG1NREl6WWpjdFpHVTJNUzAwT1dFMUxXRXpZbVl0WXpVMVlqUmpNVFk1Wm1NMCJ9"
 
 # ==========================================
-# 4. 生成 1.13.0+ 官方严格标准配置
+# 4. 生成 1.13.0+ 官方严格标准配置 (WireGuard 已迁移至 Endpoints)
 # ==========================================
 cat <<EOF > /etc/sing-box/config.json
 {
