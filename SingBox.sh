@@ -28,7 +28,7 @@ IN_PORT=60001
 ARGO_TOKEN="eyJhIjoiMTMwZWI0NmFkMGQzNzdhN2Y3Mjk3MzEzNmZlOGM3ZDIiLCJ0IjoiYzU5NGUyZmYtZmE4NC00MGY5LTg3ZWQtYzJmNzAwMjU3NzMxIiwicyI6Ik9EZG1NREl6WWpjdFpHVTJNUzAwT1dFMUxXRXpZbVl0WXpVMVlqUmpNVFk1Wm1NMCJ9"
 
 # ==========================================
-# 4. 生成 1.13.0+ 官方严格标准配置 (WireGuard 已迁移至 Endpoints)
+# 4. 生成 1.13.0+ 官方严格标准配置 (彻底删除废弃的 dns.rules)
 # ==========================================
 cat <<EOF > /etc/sing-box/config.json
 {
@@ -50,9 +50,6 @@ cat <<EOF > /etc/sing-box/config.json
         "server": "2606:4700:4700::1111",
         "detour": "direct"
       }
-    ],
-    "rules": [
-      { "outbound": "any", "server": "dns_remote" }
     ],
     "strategy": "prefer_ipv6"
   },
@@ -134,7 +131,7 @@ systemctl daemon-reload
 systemctl restart sing-box cloudflared
 
 echo "======================================================="
-echo "🎉 终极自检开始 (纯血 Endpoints 架构)"
+echo "🎉 终极自检开始 (剔除 DNS rules)"
 /usr/bin/sing-box check -c /etc/sing-box/config.json
 
 if [ $? -eq 0 ]; then
