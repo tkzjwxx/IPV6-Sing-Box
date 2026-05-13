@@ -48,20 +48,20 @@ fi
 echo "-------------------------------------------------------"
 # 自动生成随机 UUID
 UUID=$(cat /proc/sys/kernel/random/uuid)
-echo "🔑 已自动生成 UUID: $UUID"
+echo "🔑 已自动生成全新 UUID: $UUID"
 
 read -p "🎯 请输入本地监听端口 (回车默认 60001): " IN_PORT
 IN_PORT=${IN_PORT:-60001}
 
 read -p "🛡️ 请输入 Argo Tunnel Token: " ARGO_TOKEN
 if [ -z "$ARGO_TOKEN" ]; then
-    echo "❌ Token 不能为空！退出部署。"
+    echo "❌ Token 不能为空！退出。"
     exit 1
 fi
 
 read -p "🌐 请输入 Argo 绑定的域名 (例如 us3.989269.xyz): " ARGO_DOMAIN
 if [ -z "$ARGO_DOMAIN" ]; then
-    echo "❌ 域名不能为空！退出部署。"
+    echo "❌ 域名不能为空！退出。"
     exit 1
 fi
 echo "-------------------------------------------------------"
@@ -170,7 +170,54 @@ WantedBy=multi-user.target
 EOF
 
 # ==========================================
-# 6. 启动并输出节点链接
+# 6. 生成快捷查询脚本 (快捷键: j)
+# ==========================================
+cat <<EOF > /usr/local/bin/j
+#!/bin/bash
+echo -e "\n\033[1;36m=======================================================\033[0m"
+echo -e "\033[1;32m🎉 Sing-box + Argo 节点配置信息\033[0m"
+echo -e "\033[1;36m=======================================================\033[0m"
+
+echo -e "\n\033[1;33m[1] v2rayN / NekoBox 快速导入链接:\033[0m"
+echo -e "\033[32mvless://${UUID}@${ARGO_DOMAIN}:443?type=ws&security=tls&path=%2Fvless&sni=${ARGO_DOMAIN}#Argo-WARP-Node\033[0m"
+
+echo -e "\n\033[1;33m[2] Clash Meta (yaml) 节点格式:\033[0m"
+echo -e "\033[37m  - name: "Argo-WARP-Node"
+    type: vless
+    server: ${ARGO_DOMAIN}
+    port: 443
+    uuid: ${UUID}
+    udp: true
+    tls: true
+    sni: ${ARGO_DOMAIN}
+    network: ws
+    ws-opts:
+      path: "/vless"\033[0m"
+
+echo -e "\n\033[1;33m[3] Sing-box (json) 客户端出站格式:\033[0m"
+echo -e "\033[37m  {
+    \"type\": \"vless\",
+    \"tag\": \"Argo-WARP-Node\",
+    \"server\": \"${ARGO_DOMAIN}\",
+    \"server_port\": 443,
+    \"uuid\": \"${UUID}\",
+    \"tls\": {
+      \"enabled\": true,
+      \"server_name\": \"${ARGO_DOMAIN}\",
+      \"insecure\": false
+    },
+    \"transport\": {
+      \"type\": \"ws\",
+      \"path\": \"/vless\"
+    }
+  }\033[0m"
+echo -e "\033[1;36m=======================================================\033[0m"
+echo -e "💡 \033[1;37m随时在终端输入 \033[1;31mj\033[1;37m 即可再次查看此信息。\033[0m\n"
+EOF
+chmod +x /usr/local/bin/j
+
+# ==========================================
+# 7. 启动服务并执行最终验收
 # ==========================================
 echo "⚙️ 正在拉起后台服务..."
 systemctl daemon-reload
@@ -179,15 +226,10 @@ systemctl restart sing-box cloudflared
 
 sleep 2
 
-echo "======================================================="
 if systemctl is-active --quiet sing-box; then
-    echo "✅ 恭喜！Sing-box & Cloudflared 已成功平稳运行。"
-    echo ""
-    echo "🔗 请复制以下 VLESS 节点链接导入客户端 (v2rayN/v2rayNG)："
-    echo ""
-    echo -e "\033[32mvless://${UUID}@${ARGO_DOMAIN}:443?type=ws&security=tls&path=%2Fvless&sni=${ARGO_DOMAIN}#Argo-WARP-Node\033[0m"
-    echo ""
-    echo "======================================================="
+    # 服务正常，直接调用咱们刚写的快捷键展示配置！
+    j
 else
-    echo "❌ 启动异常！请运行 'journalctl -u sing-box -n 20' 查看系统日志。"
+    echo "❌ 启动异常！核心图纸校验失败或端口被占用。"
+    echo "请运行 '/usr/bin/sing-box run -c /etc/sing-box/config.json' 查看具体死因。"
 fi
